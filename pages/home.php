@@ -304,9 +304,9 @@ function getDeviceIcon($mac) {
                                                     <?php if ($device['status'] === 'connected'): ?>
                                                         <form method="POST" style="display:inline;">
                                                             <input type="hidden" name="action" value="block">
-                                                            <input type="hidden" name="device_id" value="<?php echo $device['id']; ?>">
+                                                            <input type="hidden" name="device_id" value="<?= $device['id']; ?>">
                                                             <button type="submit" class="btn btn-danger btn-sm">
-                                                                <i class="fas fa-ban"></i> Bloquer
+                                                                <a href="traitement_bloquer.php?ip=<?= $device['ip'] ?>"><i class="fas fa-ban"></i> Bloquer</a>
                                                             </button>
                                                         </form>
                                                         <a href="?section=limit-bandwidth&device_id=<?php echo $device['id']; ?>" class="btn btn-warning btn-sm">
