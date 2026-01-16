@@ -70,13 +70,20 @@ function isIPBlocked($ip) {
 
 /**
  * Block an IP address using iptables
+ * 
+ * @param string $ip The IP address to block
+ * @return array Result with success status and details
  */
 function blockConnectionForIP($ip) {
+    // Validate IP address format
     if (!filter_var($ip, FILTER_VALIDATE_IP)) {
         return [
             'success' => false,
             'error' => 'Invalid IP address format',
-            'ip' => $ip
+            'ip' => $ip,
+            'message' => 'Invalid IP address format',
+            'output' => '',
+            'returnCode' => -1
         ];
     }
     
@@ -85,64 +92,101 @@ function blockConnectionForIP($ip) {
         return [
             'success' => false,
             'error' => 'IP address is already blocked',
-            'ip' => $ip
+            'ip' => $ip,
+            'message' => "IP $ip is already blocked",
+            'output' => '',
+            'returnCode' => -1
         ];
     }
     
+    // Escape IP for shell command
     $escapedIP = escapeshellarg($ip);
-    $command = "sudo iptables -A INPUT -s $escapedIP -j DROP 2>&1";
+    
+    // Execute iptables command with sudo
+    $command = "sudo /sbin/iptables -A INPUT -s $escapedIP -j DROP 2>&1";
     
     exec($command, $output, $returnCode);
+    
+    // Log the action
+    logFirewallAction('block', $ip, $returnCode === 0);
     
     return [
         'success' => $returnCode === 0,
         'ip' => $ip,
         'output' => implode("\n", $output),
         'returnCode' => $returnCode,
-        'message' => $returnCode === 0 ? "IP $ip successfully blocked" : "Failed to block IP $ip"
+        'message' => $returnCode === 0 ? "IP $ip successfully blocked" : "Failed to block IP $ip",
+        'error' => $returnCode !== 0 ? implode("\n", $output) : null
     ];
 }
 
 /**
  * Unblock an IP address using iptables
+ * 
+ * @param string $ip The IP address to unblock
+ * @return array Result with success status and details
  */
 function unblockConnectionForIP($ip) {
+    // Validate IP address format
     if (!filter_var($ip, FILTER_VALIDATE_IP)) {
         return [
             'success' => false,
             'error' => 'Invalid IP address format',
-            'ip' => $ip
+            'ip' => $ip,
+            'message' => 'Invalid IP address format',
+            'output' => '',
+            'returnCode' => -1
         ];
     }
     
-    // Check if the IP is actually blocked
+    // Check if IP is actually blocked
     if (!isIPBlocked($ip)) {
         return [
             'success' => false,
             'error' => 'IP address is not blocked',
-            'ip' => $ip
+            'ip' => $ip,
+            'message' => "IP $ip is not currently blocked",
+            'output' => '',
+            'returnCode' => -1
         ];
     }
     
+    // Escape IP for shell command
     $escapedIP = escapeshellarg($ip);
-    $command = "sudo iptables -D INPUT -s $escapedIP -j DROP 2>&1";
+    
+    // Execute iptables command to remove the rule
+    $command = "sudo /sbin/iptables -D INPUT -s $escapedIP -j DROP 2>&1";
     
     exec($command, $output, $returnCode);
+    
+    // Log the action
+    logFirewallAction('unblock', $ip, $returnCode === 0);
     
     return [
         'success' => $returnCode === 0,
         'ip' => $ip,
         'output' => implode("\n", $output),
         'returnCode' => $returnCode,
-        'message' => $returnCode === 0 ? "IP $ip successfully unblocked" : "Failed to unblock IP $ip"
+        'message' => $returnCode === 0 ? "IP $ip successfully unblocked" : "Failed to unblock IP $ip",
+        'error' => $returnCode !== 0 ? implode("\n", $output) : null
     ];
 }
 
 /**
- * Get list of all blocked IP addresses
+ * Check if an IP address is currently blocked
+ * 
+ * @param string $ip The IP address to check
+ * @return bool True if blocked, false otherwise
+ */
+
+
+/**
+ * Get all currently blocked IP addresses
+ * 
+ * @return array List of blocked IPs with rule details
  */
 function getBlockedIPs() {
-    $command = "sudo iptables -L INPUT -n | grep DROP | awk '{print $4}' 2>&1";
+    $command = "sudo /sbin/iptables -L INPUT -n --line-numbers 2>&1";
     
     exec($command, $output, $returnCode);
     
@@ -154,90 +198,112 @@ function getBlockedIPs() {
         ];
     }
     
-    // Filter out non-IP entries and remove /32 CIDR notation
-    $ips = array_filter($output, function($line) {
-        return filter_var(str_replace('/32', '', $line), FILTER_VALIDATE_IP);
-    });
+    $blockedIPs = [];
     
-    $ips = array_map(function($ip) {
-        return str_replace('/32', '', $ip);
-    }, $ips);
+    foreach ($output as $line) {
+        // Parse lines that contain DROP rules with source IPs
+        // Example: "1    DROP       all  --  192.168.1.100        0.0.0.0/0"
+        if (preg_match('/^(\d+)\s+DROP\s+\w+\s+--\s+([\d\.]+)/', $line, $matches)) {
+            $blockedIPs[] = [
+                'rule_number' => $matches[1],
+                'ip' => $matches[2]
+            ];
+        }
+    }
     
     return [
         'success' => true,
-        'ips' => array_values($ips),
-        'count' => count($ips)
+        'ips' => $blockedIPs,
+        'count' => count($blockedIPs)
     ];
 }
 
 /**
- * Save iptables rules to make them persistent
+ * Log firewall actions to a file
+ * 
+ * @param string $action The action performed (block/unblock)
+ * @param string $ip The IP address
+ * @param bool $success Whether the action succeeded
+ */
+function logFirewallAction($action, $ip, $success) {
+    $logFile = __DIR__ . '/../logs/firewall.log';
+    $logDir = dirname($logFile);
+    
+    // Create log directory if it doesn't exist
+    if (!is_dir($logDir)) {
+        mkdir($logDir, 0755, true);
+    }
+    
+    $timestamp = date('Y-m-d H:i:s');
+    $status = $success ? 'SUCCESS' : 'FAILED';
+    $user = $_SERVER['REMOTE_ADDR'] ?? 'CLI';
+    
+    $logMessage = "[$timestamp] $status - $action IP: $ip - Requested by: $user\n";
+    
+    file_put_contents($logFile, $logMessage, FILE_APPEND | LOCK_EX);
+}
+
+/**
+ * Flush all iptables INPUT rules (use with caution!)
+ * 
+ * @return array Result with success status
+ */
+function flushAllBlockedIPs() {
+    $command = "sudo /sbin/iptables -F INPUT 2>&1";
+    
+    exec($command, $output, $returnCode);
+    
+    logFirewallAction('flush_all', 'ALL', $returnCode === 0);
+    
+    return [
+        'success' => $returnCode === 0,
+        'message' => $returnCode === 0 ? 'All INPUT rules flushed' : 'Failed to flush rules',
+        'output' => implode("\n", $output),
+        'returnCode' => $returnCode
+    ];
+}
+
+/**
+ * Save current iptables rules to persist across reboots
+ * 
+ * @return array Result with success status
  */
 function saveIPTablesRules() {
     // For Debian/Ubuntu systems
-    $command = "sudo sh -c 'iptables-save > /etc/iptables/rules.v4' 2>&1";
+    $command = "sudo /sbin/iptables-save > /etc/iptables/rules.v4 2>&1";
     
     exec($command, $output, $returnCode);
     
     return [
         'success' => $returnCode === 0,
+        'message' => $returnCode === 0 ? 'iptables rules saved' : 'Failed to save rules',
         'output' => implode("\n", $output),
-        'message' => $returnCode === 0 ? 'iptables rules saved successfully' : 'Failed to save iptables rules'
+        'returnCode' => $returnCode
     ];
 }
 
 /**
- * Block multiple IP addresses at once
+ * Get iptables statistics
+ * 
+ * @return array Statistics about blocked connections
  */
-function blockMultipleIPs(array $ips) {
-    $results = [];
+function getFirewallStats() {
+    $command = "sudo /sbin/iptables -L INPUT -n -v 2>&1";
     
-    foreach ($ips as $ip) {
-        $results[$ip] = blockConnectionForIP($ip);
+    exec($command, $output, $returnCode);
+    
+    if ($returnCode !== 0) {
+        return [
+            'success' => false,
+            'error' => 'Failed to retrieve statistics'
+        ];
     }
     
-    return $results;
+    return [
+        'success' => true,
+        'output' => implode("\n", $output),
+        'raw_data' => $output
+    ];
 }
-
-/**
- * Unblock multiple IP addresses at once
- */
-function unblockMultipleIPs(array $ips) {
-    $results = [];
-    
-    foreach ($ips as $ip) {
-        $results[$ip] = unblockConnectionForIP($ip);
-    }
-    
-    return $results;
-}
-
-// Example usage:
-/*
-// Block an IP
-$result = blockConnectionForIP('192.168.1.100');
-print_r($result);
-
-// Check if IP is blocked
-$isBlocked = isIPBlocked('192.168.1.100');
-echo "Is blocked: " . ($isBlocked ? 'Yes' : 'No') . "\n";
-
-// Unblock an IP
-$result = unblockConnectionForIP('192.168.1.100');
-print_r($result);
-
-// Get all blocked IPs
-$blocked = getBlockedIPs();
-print_r($blocked);
-
-// Block multiple IPs
-$results = blockMultipleIPs(['192.168.1.100', '10.0.0.50', '172.16.0.1']);
-print_r($results);
-
-// Save rules to persist across reboots
-$saveResult = saveIPTablesRules();
-print_r($saveResult);
-*/
 
 ?>
-
